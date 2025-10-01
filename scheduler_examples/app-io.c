@@ -64,7 +64,7 @@ process_status_en handle_process_requests(int sockfd, const pid_t pid, const cha
     }
     *sim_clock_ms = msg.time_ms;
     if (*sim_start_time_ms == 0) *sim_start_time_ms = *sim_clock_ms; // First burst, set the start time
-    printf("Received %s from scheduler for application %s (PID %d) at time %u ms\n",
+    DBG("Received %s from scheduler for application %s (PID %d) at time %u ms\n",
            PROCESS_REQUEST_STRINGS[msg.request], app_name, pid, *sim_clock_ms);
 
     // Wait for DONE and the internal simulation time
@@ -79,7 +79,7 @@ process_status_en handle_process_requests(int sockfd, const pid_t pid, const cha
         return process_error;
     }
     *sim_clock_ms = msg.time_ms;
-    printf("Received %s from scheduler for application %s (PID %d) at time %u ms\n",
+    DBG("Received %s from scheduler for application %s (PID %d) at time %u ms\n",
            PROCESS_REQUEST_STRINGS[msg.request], app_name, pid, *sim_clock_ms);
 
     return process_success;
@@ -126,28 +126,30 @@ int main(int argc, char *argv[]) {
     uint32_t sim_clock_ms = 0;              // Clock of the scheduler
 
     uint32_t start_time_ms = 0;             // Start time of the app
-    uint32_t app_duration_ms = 0;           // duration of the app (bursts and blocks)
+    uint32_t cpu_duration_ms = 0;           // duration of the app (bursts and blocks)
+    uint32_t block_duration_ms = 0;         // duration of the app in blocked state
 
     burst_t *active_burst;
 
     while ((active_burst = dequeue_burst(&bursts)) != NULL) {
         if (handle_process_requests(sockfd, pid, app_name, active_burst, PROCESS_REQUEST_RUN, &start_time_ms, &sim_clock_ms) == process_error)
             break;
-        app_duration_ms += active_burst->burst_time_ms;
+        cpu_duration_ms += active_burst->burst_time_ms;
 
         if (active_burst->block_time_ms > 0) {
             if (handle_process_requests(sockfd, pid, app_name, active_burst, PROCESS_REQUEST_BLOCK, &start_time_ms, &sim_clock_ms) == process_error)
                 break;
-            app_duration_ms += active_burst->block_time_ms;
+            block_duration_ms += active_burst->block_time_ms;
         }
     }
 
     // Received EXIT, print stats
     double real = (sim_clock_ms - start_time_ms)/1000.0;
-    double user = (double)app_duration_ms/1000.0;
+    double user = (double)cpu_duration_ms/1000.0;
+    double sys = (double)block_duration_ms/1000.0;
 
-    printf("Application %s (PID %d) finished at time %d ms, Elapsed: %.03f seconds, CPU: %.03f seconds\n",
-           app_name, pid, sim_clock_ms, real, user);
+    printf("Application %s (PID %d) finished at time %d ms, Elapsed: %.03f seconds, CPU: %.03f seconds, BLOCKED: %.03f seconds\n",
+           app_name, pid, sim_clock_ms, real, user, sys);
 
     close(sockfd);
     free(app_name);

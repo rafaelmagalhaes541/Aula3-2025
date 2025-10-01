@@ -18,6 +18,7 @@ typedef struct pcb_st{
     uint32_t ellapsed_time_ms;     // Time ellapsed since start in milliseconds
     uint32_t slice_start_ms;       // Time when the current time slice started
     uint32_t sockfd;               // Socket file descriptor for communication with the application
+    uint32_t last_update_time_ms;  // Last time the PCB was updataed
 } pcb_t;
 
 // Define singly linked list elements

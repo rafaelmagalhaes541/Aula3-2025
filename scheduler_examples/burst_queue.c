@@ -35,7 +35,7 @@ int parse_burst_line(const char* line, burst_t* burst) {
     burst->burst_time_ms = (int)burst_time;
 
     // Optional: block time
-    token = strtok(NULL, ",\n");
+    token = strtok(NULL, ",\r\n");
     if (token) {
         long block_time_ms = strtol(token, &endptr, 10);
         if (*endptr != '\0' || block_time_ms < INT_MIN || block_time_ms > INT_MAX) {
@@ -47,7 +47,7 @@ int parse_burst_line(const char* line, burst_t* burst) {
     }
 
     // Optional: parse nice
-    token = strtok(NULL, ",\n");
+    token = strtok(NULL, ",\r\n");
     if (token) {
         long nice_value = strtol(token, &endptr, 10);
         if (*endptr != '\0' || nice_value < INT_MIN || nice_value > INT_MAX) {

@@ -13,10 +13,12 @@
 #include <sys/errno.h>
 
 #include "fifo.h"
+
 #include "msg.h"
 #include "queue.h"
 
 static uint32_t PID = 0;
+
 
 
 /**
@@ -142,6 +144,7 @@ void check_new_commands(queue_t *command_queue, queue_t *blocked_queue, queue_t 
         if (msg.request == PROCESS_REQUEST_RUN) {
             current_pcb->pid = msg.pid; // Set the pid from the message
             current_pcb->time_ms = msg.time_ms;
+            current_pcb->ellapsed_time_ms = 0;
             current_pcb->status = TASK_RUNNING;
             enqueue_pcb(ready_queue, current_pcb);
             DBG("Process %d requested RUN for %d ms\n", current_pcb->pid, current_pcb->time_ms);
@@ -192,11 +195,16 @@ void check_blocked_queue(queue_t * blocked_queue, queue_t * command_queue, uint3
     queue_elem_t * elem = blocked_queue->head;
     while (elem != NULL) {
         pcb_t *pcb = elem->pcb;
-        if (pcb->time_ms > TICKS_MS) {
-            pcb->time_ms -= TICKS_MS;
-        } else {
-            pcb->time_ms = 0;
+
+        // Make sure the time is updated only once per cycle
+        if (pcb->last_update_time_ms < current_time_ms) {
+            if (pcb->time_ms > TICKS_MS) {
+                pcb->time_ms -= TICKS_MS;
+            } else {
+                pcb->time_ms = 0;
+            }
         }
+
         if (pcb->time_ms == 0) {
             // Send DONE message to the application
             msg_t msg = {
@@ -209,24 +217,27 @@ void check_blocked_queue(queue_t * blocked_queue, queue_t * command_queue, uint3
             }
             DBG("Process %d finished BLOCK, sending DONE\n", pcb->pid);
             pcb->status = TASK_COMMAND;
+            pcb->last_update_time_ms = current_time_ms;
             enqueue_pcb(command_queue, pcb);
 
             // Remove from blocked queue
             remove_queue_elem(blocked_queue, elem);
             queue_elem_t *tmp = elem;
-            elem = elem->next;
+            elem = elem->next;  // Do this here, because we free it in the next line
             free(tmp);
+        } else {
+            elem = elem->next;  // If not done already, do it now
         }
     }
 }
 
 static const char *SCHEDULER_NAMES[] = {
     "FIFO",
-    /*
+/*
     "SJF",
     "RR",
     "MLFQ",
-    */
+*/
     NULL
 };
 
@@ -290,19 +301,23 @@ int main(int argc, char *argv[]) {
         }
         // Check the status of the PCBs in the blocked queue
         check_blocked_queue(&blocked_queue, &command_queue, current_time_ms);
+        // Tasks from the blocked queue could be moved to the command queue, check again
+        usleep(TICKS_MS * 1000/2);
+        check_new_commands(&command_queue, &blocked_queue, &ready_queue, server_fd, current_time_ms);
 
         // The scheduler handles the READY queue
         switch (scheduler_type) {
             case SCHED_FIFO:
                 fifo_scheduler(current_time_ms, &ready_queue, &CPU);
                 break;
+
             default:
                 printf("Unknown scheduler type\n");
                 break;
         }
 
         // Simulate a tick
-        usleep(TICKS_MS * 1000);
+        usleep(TICKS_MS * 1000/2);
         current_time_ms += TICKS_MS;
     }
 

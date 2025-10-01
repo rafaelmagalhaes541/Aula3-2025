@@ -57,7 +57,7 @@ int main(int argc, char *argv[]) {
     }
 
     // All in place to start simulating the app
-//    printf("Application %s started, will need the CPU for %d seconds\n", app_name, time_s);
+    printf("Application %s started, will need the CPU for %d seconds\n", app_name, time_s);
 
     // Send RUN request
     pid_t pid = getpid();
