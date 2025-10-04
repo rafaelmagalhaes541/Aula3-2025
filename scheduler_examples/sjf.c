@@ -1,3 +1,12 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+#include "msg.h"
+#include <unistd.h>
+
+#include "queue.h"
+
+
 void sjf_scheduler(uint32_t current_time_ms, queue_t *rq, pcb_t **cpu_task) {
     if (*cpu_task) {
         (*cpu_task)->ellapsed_time_ms += TICKS_MS;      // Add to the running time of the application/task
