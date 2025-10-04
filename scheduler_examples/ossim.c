@@ -248,7 +248,7 @@ typedef enum  {
     SCHED_FIFO = 0,
     SCHED_SJF = 1,
     SCHED_RR = 2,
-    SCHED_MLFQ
+    //SCHED_MLFQ
 } scheduler_en;
 
 scheduler_en get_scheduler(const char *name) {
