@@ -1,3 +1,5 @@
+#include "sjf.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 

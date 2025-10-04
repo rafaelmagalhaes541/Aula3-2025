@@ -7,6 +7,9 @@
           <mappings>
             <mapping deploy="/tmp/tmp.mvxuvYAzqe/Aula3-2025" local="$PROJECT_DIR$" />
           </mappings>
+          <excludedPaths>
+            <excludedPath local="true" path="$PROJECT_DIR$/scheduler_examples/cmake-build-debug" />
+          </excludedPaths>
         </serverdata>
       </paths>
     </serverData>
