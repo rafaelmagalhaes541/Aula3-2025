@@ -6,18 +6,24 @@
 #include "msg.h"
 #include <unistd.h>
 
-/* --- parâmetros e tabela de metadados (file-scope) --- */
 #define MLFQ_LEVELS 3
-static const uint32_t level_quantum_ms[MLFQ_LEVELS] = { 500, 1000, 2000 };
+static const uint32_t level_quantum_ms[MLFQ_LEVELS] = { 500, 1000, 2000 }; // Quantum de cada nível (0.5s, 1s, 2s)
 #define MAX_META 256
-typedef struct { uint32_t pid; int level; uint32_t run_ms; } meta_t;
-static meta_t meta_tbl[MAX_META] = {0};
 
-/* --- helpers file-scope (static) --- */
+typedef struct {
+    uint32_t pid;   // ID do processo
+    int level;      // nível de prioridade (0 = alta, 2 = baixa)
+    uint32_t run_ms;// tempo já gasto neste nível
+} meta_t;
+
+static meta_t meta_tbl[MAX_META] = {0}; // tabela para armazenar info de todos os processos
+
+//Função auxiliar: encontra ou cria entrada meta_t para um processo
 static meta_t *m_find(uint32_t pid) {
     for (int i = 0; i < MAX_META; ++i) {
-        if (meta_tbl[i].pid == pid) return &meta_tbl[i];
+        if (meta_tbl[i].pid == pid) return &meta_tbl[i]; // se já existe, devolve
     }
+    // se não existe, cria uma nova entrada livre
     for (int i = 0; i < MAX_META; ++i) {
         if (meta_tbl[i].pid == 0) {
             meta_tbl[i].pid = pid;
@@ -26,9 +32,10 @@ static meta_t *m_find(uint32_t pid) {
             return &meta_tbl[i];
         }
     }
-    return NULL;
+    return NULL; // tabela cheia
 }
 
+//Função auxiliar: remove o processo da tabela quando termina
 static void m_remove(uint32_t pid) {
     for (int i = 0; i < MAX_META; ++i) {
         if (meta_tbl[i].pid == pid) {
@@ -40,63 +47,59 @@ static void m_remove(uint32_t pid) {
     }
 }
 
+//Escalonador MLFQ
 void mlfq_scheduler(uint32_t current_time_ms, queue_t *rq, pcb_t **cpu_task) {
-    /* --- avanço do trabalho da tarefa em CPU --- */
+    // Vetores simples para guardar nível e tempo de CPU por PID
+    static int nivel[256] = {0};
+    static uint32_t tempo_exec[256] = {0};
+    const uint32_t quantum[3] = {500, 1000, 2000}; // tamanhos de fatia de tempo (time-slice)
+
+    //Atualiza tarefa atual (se houver)
     if (*cpu_task) {
         (*cpu_task)->ellapsed_time_ms += TICKS_MS;
+        tempo_exec[(*cpu_task)->pid] += TICKS_MS;
 
+        // Se o processo terminou
         if ((*cpu_task)->ellapsed_time_ms >= (*cpu_task)->time_ms) {
-            /* terminou: notifica e liberta */
             msg_t msg = {
                 .pid = (*cpu_task)->pid,
                 .request = PROCESS_REQUEST_DONE,
                 .time_ms = current_time_ms
             };
-            if (write((*cpu_task)->sockfd, &msg, sizeof(msg_t)) != sizeof(msg_t)) {
-                perror("write");
-            }
-            m_remove((*cpu_task)->pid);
+            write((*cpu_task)->sockfd, &msg, sizeof(msg_t));
+            nivel[(*cpu_task)->pid] = 0;
+            tempo_exec[(*cpu_task)->pid] = 0;
             free(*cpu_task);
             *cpu_task = NULL;
-        } else {
-            /* não terminou: actualiza contador no nível e verifica quantum */
-            meta_t *m = m_find((*cpu_task)->pid);
-            if (m) {
-                if (m->level < 0) m->level = 0;
-                if (m->level >= MLFQ_LEVELS) m->level = MLFQ_LEVELS - 1;
-                m->run_ms += TICKS_MS;
-                if (m->run_ms >= level_quantum_ms[m->level]) {
-                    /* atingiu quantum -> demote se possível, re-enqueue e liberta CPU */
-                    if (m->level < MLFQ_LEVELS - 1) m->level++;
-                    m->run_ms = 0;
-                    enqueue_pcb(rq, *cpu_task);
-                    *cpu_task = NULL;
-                }
-            }
-            /* se m == NULL (tabela cheia) simplesmente não demotamos */
+        }
+        // Se atingiu o quantum baixa prioridade e volta à fila
+        else if (tempo_exec[(*cpu_task)->pid] >= quantum[nivel[(*cpu_task)->pid]]) {
+            if (nivel[(*cpu_task)->pid] < 2)
+                nivel[(*cpu_task)->pid]++;
+            tempo_exec[(*cpu_task)->pid] = 0;
+            enqueue_pcb(rq, *cpu_task);
+            *cpu_task = NULL;
         }
     }
 
-    /* --- se CPU livre, escolhe a tarefa com maior prioridade (menor level) --- */
+    // Se CPU está livre, escolher próxima tarefa
     if (*cpu_task == NULL) {
-        pcb_t *selected = NULL;
-        pcb_t *curr;
-        while ((curr = dequeue_pcb(rq)) != NULL) {
-            meta_t *mc = m_find(curr->pid); /* cria meta se nova */
-            int curr_level = mc ? mc->level : 0;
-            if (selected == NULL) {
-                selected = curr;
-            } else {
-                meta_t *ms = m_find(selected->pid);
-                int sel_level = ms ? ms->level : 0;
-                if (curr_level < sel_level) {
-                    enqueue_pcb(rq, selected);
-                    selected = curr;
-                } else {
-                    enqueue_pcb(rq, curr);
-                }
-            }
+        pcb_t *melhor = NULL;
+        int nivel_melhor = 3;
+        int n = rq->size;
+
+        // percorre todos os processos e escolhe o de menor nível
+        for (int i = 0; i < n; i++) {
+            pcb_t *p = dequeue_pcb(rq);
+            int nv = nivel[p->pid];
+
+            if (nv < nivel_melhor) {
+                if (melhor) enqueue_pcb(rq, melhor);
+                melhor = p;
+                nivel_melhor = nv;
+            } else enqueue_pcb(rq, p);
         }
-        *cpu_task = selected;
+
+        *cpu_task = melhor; // executa o processo com prioridade mais alta
     }
 }

@@ -1,57 +1,78 @@
 #include "sjf.h"
 
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
-
-#include "msg.h"
 #include <unistd.h>
 
+#include "debug.h"
+#include "msg.h"
 #include "queue.h"
 
 
+queue_elem_t* find_shortest_job(queue_t *rq) {
+    if (rq == NULL || rq->head == NULL) {
+        return NULL;
+    }
+
+    queue_elem_t *shortest_elem = rq->head;
+    queue_elem_t *current_elem = rq->head->next;
+    uint32_t shortest_time = shortest_elem->pcb->time_ms;
+
+    // Percorre a fila para encontrar o trabalho mais curto
+    while (current_elem != NULL) {
+        if (current_elem->pcb->time_ms < shortest_time) {
+            shortest_elem = current_elem;
+            shortest_time = current_elem->pcb->time_ms;
+        }
+        current_elem = current_elem->next;
+    }
+
+    return shortest_elem;
+}
+
 void sjf_scheduler(uint32_t current_time_ms, queue_t *rq, pcb_t **cpu_task) {
-    if (*cpu_task) {
-        (*cpu_task)->ellapsed_time_ms += TICKS_MS;      // Add to the running time of the application/task
+    // Se há uma tarefa executando na CPU
+    if (*cpu_task != NULL) {
+        (*cpu_task)->ellapsed_time_ms += TICKS_MS;
+
+        // Verifica se a tarefa atual terminou
         if ((*cpu_task)->ellapsed_time_ms >= (*cpu_task)->time_ms) {
-            // Task finished
-            // Send msg to application
+            // Tarefa finalizada - envia mensagem DONE para a aplicação
             msg_t msg = {
                 .pid = (*cpu_task)->pid,
                 .request = PROCESS_REQUEST_DONE,
                 .time_ms = current_time_ms
             };
+
             if (write((*cpu_task)->sockfd, &msg, sizeof(msg_t)) != sizeof(msg_t)) {
                 perror("write");
             }
-            // Application finished and can be removed (this is FIFO after all)
-            free((*cpu_task));
-            (*cpu_task) = NULL;
+
+            DBG("SJF: Process %d finished execution at time %d ms\n",
+                (*cpu_task)->pid, current_time_ms);
+
+            // Libera a PCB e marca CPU como ociosa
+            free(*cpu_task);
+            *cpu_task = NULL;
         }
     }
-    if (*cpu_task == NULL) {            // If CPU is idle
-        /* Inline SJF: percorre a ready-queue, encontra o PCB com menor tempo restante
-           (time_ms - ellapsed_time_ms) e re-enqueue os restantes para preservar ordem. */
-        pcb_t *shortest = NULL;
-        pcb_t *curr;
-        while ((curr = dequeue_pcb(rq)) != NULL) {
-            uint32_t remaining_curr = (curr->time_ms > curr->ellapsed_time_ms) ?
-                                      (curr->time_ms - curr->ellapsed_time_ms) : 0;
-            if (shortest == NULL) {
-                shortest = curr;
-            } else {
-                uint32_t remaining_shortest = (shortest->time_ms > shortest->ellapsed_time_ms) ?
-                                              (shortest->time_ms - shortest->ellapsed_time_ms) : 0;
-                if (remaining_curr < remaining_shortest) {
-                    /* curr é mais curto: re-enqueue o anterior shortest e guarda curr como shortest */
-                    enqueue_pcb(rq, shortest);
-                    shortest = curr;
-                } else {
-                    /* curr não é o mais curto, re-enqueue curr */
-                    enqueue_pcb(rq, curr);
-                }
-            }
+
+    // Se a CPU está ociosa e há tarefas na fila de pronto
+    if (*cpu_task == NULL && rq->head != NULL) {
+        // Encontra a tarefa com menor tempo de execução
+        queue_elem_t *shortest_elem = find_shortest_job(rq);
+
+        if (shortest_elem != NULL) {
+            // Remove o elemento da fila de pronto
+            remove_queue_elem(rq, shortest_elem);
+
+            // Coloca a tarefa na CPU
+            *cpu_task = shortest_elem->pcb;
+            free(shortest_elem); // Libera apenas o elemento da fila, não a PCB
+
+            DBG("SJF: Selected process %d with burst time %d ms at time %d ms\n",
+                (*cpu_task)->pid, (*cpu_task)->time_ms, current_time_ms);
         }
-        /* shortest é o PCB com menor tempo restante (ou NULL se a fila vazia). */
-        *cpu_task = shortest;
     }
 }

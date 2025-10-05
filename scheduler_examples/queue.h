@@ -33,6 +33,7 @@ typedef struct queue_elem_st {
 typedef struct queue_st  {
     queue_elem_t* head;
     queue_elem_t* tail;
+    int size;
 } queue_t;
 
 /**
