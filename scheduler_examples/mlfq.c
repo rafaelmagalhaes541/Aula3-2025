@@ -5,10 +5,9 @@
 
 #include "msg.h"
 #include <unistd.h>
+#include "debug.h"
 
-#define MLFQ_LEVELS 3
 static const uint32_t level_quantum_ms[MLFQ_LEVELS] = { 500, 1000, 2000 }; // Quantum de cada nível (0.5s, 1s, 2s)
-#define MAX_META 256
 
 typedef struct {
     uint32_t pid;   // ID do processo
@@ -18,7 +17,7 @@ typedef struct {
 
 static meta_t meta_tbl[MAX_META] = {0}; // tabela para armazenar info de todos os processos
 
-//Função auxiliar: encontra ou cria entrada meta_t para um processo
+// Função auxiliar: encontra ou cria entrada meta_t para um processo
 static meta_t *m_find(uint32_t pid) {
     for (int i = 0; i < MAX_META; ++i) {
         if (meta_tbl[i].pid == pid) return &meta_tbl[i]; // se já existe, devolve
@@ -35,7 +34,7 @@ static meta_t *m_find(uint32_t pid) {
     return NULL; // tabela cheia
 }
 
-//Função auxiliar: remove o processo da tabela quando termina
+// Função auxiliar: remove o processo da tabela quando termina
 static void m_remove(uint32_t pid) {
     for (int i = 0; i < MAX_META; ++i) {
         if (meta_tbl[i].pid == pid) {
@@ -47,59 +46,174 @@ static void m_remove(uint32_t pid) {
     }
 }
 
-//Escalonador MLFQ
-void mlfq_scheduler(uint32_t current_time_ms, queue_t *rq, pcb_t **cpu_task) {
-    // Vetores simples para guardar nível e tempo de CPU por PID
-    static int nivel[256] = {0};
-    static uint32_t tempo_exec[256] = {0};
-    const uint32_t quantum[3] = {500, 1000, 2000}; // tamanhos de fatia de tempo (time-slice)
+// Função auxiliar: encontra o processo de maior prioridade na fila
+static pcb_t* find_highest_priority(queue_t *rq, int *highest_level) {
+    pcb_t *highest = NULL;
+    *highest_level = MLFQ_LEVELS; // Inicializa com o pior nível possível
 
-    //Atualiza tarefa atual (se houver)
-    if (*cpu_task) {
-        (*cpu_task)->ellapsed_time_ms += TICKS_MS;
-        tempo_exec[(*cpu_task)->pid] += TICKS_MS;
+    queue_elem_t *elem = rq->head;
+    while (elem != NULL) {
+        pcb_t *p = elem->pcb;
+        meta_t *m = m_find(p->pid);
+        int level = (m != NULL) ? m->level : 0;
+
+        if (level < *highest_level) {
+            *highest_level = level;
+            highest = p;
+        }
+        elem = elem->next;
+    }
+
+    return highest;
+}
+
+// Função auxiliar: remove um processo específico da fila
+static void remove_pcb_from_queue(queue_t *rq, pcb_t *pcb) {
+    if (rq->head == NULL) return;
+
+    // Caso especial: primeiro elemento
+    if (rq->head->pcb == pcb) {
+        queue_elem_t *to_remove = rq->head;
+        rq->head = rq->head->next;
+        if (rq->head == NULL) {
+            rq->tail = NULL;
+        }
+        free(to_remove);
+        return;
+    }
+
+    // Procura o elemento
+    queue_elem_t *prev = rq->head;
+    queue_elem_t *current = rq->head->next;
+
+    while (current != NULL) {
+        if (current->pcb == pcb) {
+            prev->next = current->next;
+            if (current == rq->tail) {
+                rq->tail = prev;
+            }
+            free(current);
+            return;
+        }
+        prev = current;
+        current = current->next;
+    }
+}
+
+// Escalonador MLFQ com suporte a múltiplas CPUs
+void mlfq_scheduler(uint32_t current_time_ms, queue_t *rq, pcb_t **cpus, int num_cpus) {
+    int i;
+
+    // 1. Atualiza todos os processos que estão a correr nas CPUs
+    for (i = 0; i < num_cpus; i++) {
+        pcb_t *p = cpus[i];
+        if (p == NULL) continue;
+
+        // Atualiza tempo decorrido
+        p->ellapsed_time_ms += TICKS_MS;
+
+        // Atualiza tempo no nível atual
+        meta_t *m = m_find(p->pid);
+        if (m != NULL) {
+            m->run_ms += TICKS_MS;
+        }
 
         // Se o processo terminou
-        if ((*cpu_task)->ellapsed_time_ms >= (*cpu_task)->time_ms) {
+        if (p->ellapsed_time_ms >= p->time_ms) {
+            DBG("Process %d finished CPU burst on CPU %d (MLFQ)\n", p->pid, i);
+
             msg_t msg = {
-                .pid = (*cpu_task)->pid,
+                .pid = p->pid,
                 .request = PROCESS_REQUEST_DONE,
                 .time_ms = current_time_ms
             };
-            write((*cpu_task)->sockfd, &msg, sizeof(msg_t));
-            nivel[(*cpu_task)->pid] = 0;
-            tempo_exec[(*cpu_task)->pid] = 0;
-            free(*cpu_task);
-            *cpu_task = NULL;
+            write(p->sockfd, &msg, sizeof(msg_t));
+
+            // Limpa metadados
+            m_remove(p->pid);
+
+            // Atualiza estado
+            p->status = TASK_COMMAND;
+            p->ellapsed_time_ms = 0;
+            cpus[i] = NULL;
+            continue;
         }
-        // Se atingiu o quantum baixa prioridade e volta à fila
-        else if (tempo_exec[(*cpu_task)->pid] >= quantum[nivel[(*cpu_task)->pid]]) {
-            if (nivel[(*cpu_task)->pid] < 2)
-                nivel[(*cpu_task)->pid]++;
-            tempo_exec[(*cpu_task)->pid] = 0;
-            enqueue_pcb(rq, *cpu_task);
-            *cpu_task = NULL;
+
+        // Se atingiu o quantum do nível atual
+        if (m != NULL && m->run_ms >= level_quantum_ms[m->level]) {
+            DBG("Process %d preempted on CPU %d (quantum expired in level %d)\n",
+                p->pid, i, m->level);
+
+            // Ajusta tempo restante
+            p->time_ms -= p->ellapsed_time_ms;
+            p->ellapsed_time_ms = 0;
+
+            // Baixa de prioridade (se não estiver no último nível)
+            if (m->level < MLFQ_LEVELS - 1) {
+                m->level++;
+            }
+            m->run_ms = 0;
+
+            // Volta para a fila
+            p->status = TASK_RUNNING;
+            enqueue_pcb(rq, p);
+            cpus[i] = NULL;
         }
     }
 
-    // Se CPU está livre, escolher próxima tarefa
-    if (*cpu_task == NULL) {
-        pcb_t *melhor = NULL;
-        int nivel_melhor = 3;
-        int n = rq->size;
+    // 2. Aging: promove processos que esperam muito tempo
+    static uint32_t last_aging_time = 0;
+    if (current_time_ms - last_aging_time > 1000) { // Aging a cada 1 segundo
+        queue_elem_t *elem = rq->head;
+        while (elem != NULL) {
+            pcb_t *p = elem->pcb;
+            meta_t *m = m_find(p->pid);
 
-        // percorre todos os processos e escolhe o de menor nível
-        for (int i = 0; i < n; i++) {
-            pcb_t *p = dequeue_pcb(rq);
-            int nv = nivel[p->pid];
+            if (m != NULL && m->level > 0) {
+                // Incrementa tempo de espera (simplificado)
+                static uint32_t waiting_time[256] = {0};
+                waiting_time[p->pid] += 1000;
 
-            if (nv < nivel_melhor) {
-                if (melhor) enqueue_pcb(rq, melhor);
-                melhor = p;
-                nivel_melhor = nv;
-            } else enqueue_pcb(rq, p);
+                // Se esperou mais de 2 segundos, promove
+                if (waiting_time[p->pid] > 2000) {
+                    DBG("Process %d promoted from level %d due to aging\n",
+                        p->pid, m->level);
+
+                    m->level--;
+                    m->run_ms = 0;
+                    waiting_time[p->pid] = 0;
+                }
+            }
+            elem = elem->next;
+        }
+        last_aging_time = current_time_ms;
+    }
+
+    // 3. Coloca processos da ready_queue nas CPUs livres
+    for (i = 0; i < num_cpus; i++) {
+        if (cpus[i] != NULL) continue; // CPU ocupada
+
+        // Encontra o processo de maior prioridade (menor nível)
+        int highest_level;
+        pcb_t *highest = find_highest_priority(rq, &highest_level);
+
+        if (highest == NULL) break; // Nada para executar
+
+        // Remove da fila
+        remove_pcb_from_queue(rq, highest);
+
+        // Coloca na CPU
+        highest->status = TASK_RUNNING;
+        highest->ellapsed_time_ms = 0;
+        cpus[i] = highest;
+
+        // Atualiza metadados
+        meta_t *m = m_find(highest->pid);
+        if (m != NULL) {
+            m->run_ms = 0; // Reinicia contador de quantum
         }
 
-        *cpu_task = melhor; // executa o processo com prioridade mais alta
+        DBG("Process %d started on CPU %d from level %d (MLFQ)\n",
+            highest->pid, i, highest_level);
     }
 }

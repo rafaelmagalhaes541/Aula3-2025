@@ -8,6 +8,7 @@
 #include "debug.h"
 
 #define MAX_CLIENTS 128
+#define NUM_CPUS 4
 
 #include <stdlib.h>
 #include <sys/errno.h>
@@ -283,8 +284,8 @@ int main(int argc, char *argv[]) {
     queue_t ready_queue = {.head = NULL, .tail = NULL};
     queue_t blocked_queue = {.head = NULL, .tail = NULL};
 
-    // We only have a single CPU that is a pointer to the actively running PCB on the CPU
-    pcb_t *CPU = NULL;
+    // Array de CPUs - cada posição pode ter um processo rodando ou NULL
+    pcb_t *cpus[NUM_CPUS] = { NULL };
 
     int server_fd = setup_server_socket(SOCKET_PATH);
     if (server_fd < 0) {
@@ -309,16 +310,16 @@ int main(int argc, char *argv[]) {
         // The scheduler handles the READY queue
         switch (scheduler_type) {
             case SCHED_FIFO:
-                fifo_scheduler(current_time_ms, &ready_queue, &CPU);
+                fifo_scheduler(current_time_ms, &ready_queue, cpus, NUM_CPUS);
                 break;
             case SCHED_SJF:
-                sjf_scheduler(current_time_ms, &ready_queue, &CPU);
+                sjf_scheduler(current_time_ms, &ready_queue, cpus, NUM_CPUS);
                 break;
             case SCHED_RR:
-                rr_scheduler(current_time_ms, &ready_queue, &CPU);
+                rr_scheduler(current_time_ms, &ready_queue, cpus, NUM_CPUS);
                 break;
             case SCHED_MLFQ:
-                mlfq_scheduler(current_time_ms, &ready_queue, &CPU);
+                mlfq_scheduler(current_time_ms, &ready_queue, cpus, NUM_CPUS);
                 break;
             default:
                 printf("Unknown scheduler type\n");
